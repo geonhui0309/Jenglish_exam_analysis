@@ -186,7 +186,7 @@ def parse_report_markdown(md: str) -> ReportDashboard:
         t1 = _extract_tables_in_order(s1)
         if t1:
             r.exam_questions = t1[0]
-        sub_tr = _after_heading(s1, "유형 비율")
+        sub_tr = _after_heading_any(s1, "유형별 비율", "유형 비율")
         if sub_tr:
             tt = _extract_tables_in_order(sub_tr)
             if tt:
@@ -196,7 +196,7 @@ def parse_report_markdown(md: str) -> ReportDashboard:
         t2 = _extract_tables_in_order(s2)
         if t2:
             r.source_questions = t2[0]
-        sub_sr = _after_heading(s2, "출처 비율")
+        sub_sr = _after_heading_any(s2, "출처별 비율", "출처 비율")
         if sub_sr:
             tt = _extract_tables_in_order(sub_sr)
             if tt:
