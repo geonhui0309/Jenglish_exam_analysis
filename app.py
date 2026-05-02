@@ -8,7 +8,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 from report_parser import parse_report_markdown, ratio_column_to_float
-from saved_reports import list_saved, load_report, save_report
+from saved_reports import delete_report, list_saved, load_report, save_report
 
 
 def _strip_total_row(df: pd.DataFrame | None, first_col: str | None = None) -> pd.DataFrame | None:
@@ -55,8 +55,20 @@ def _render_dashboard(md: str, source_note: str) -> None:
         st.markdown(rep.intro)
     st.caption(f"원본: **{source_note}**")
 
-    mcols = st.columns(4)
     n_q = len(rep.exam_questions) if rep.exam_questions is not None else 0
+    has_variant = (
+        rep.exam_questions is not None
+        and not rep.exam_questions.empty
+        and "변형 여부" in rep.exam_questions.columns
+    )
+    n_variant_yes = 0
+    pct_variant = 0.0
+    if has_variant and n_q:
+        vser = rep.exam_questions["변형 여부"].astype(str).str.strip()
+        n_variant_yes = int((vser == "있음").sum())
+        pct_variant = round(100.0 * n_variant_yes / n_q, 1)
+
+    mcols = st.columns(5 if has_variant else 4)
     with mcols[0]:
         st.metric("분석 문항 수", str(n_q) if n_q else "—")
 
@@ -96,6 +108,15 @@ def _render_dashboard(md: str, source_note: str) -> None:
     with mcols[3]:
         st.metric("출처 미확인 합계(개)", unk)
 
+    if has_variant:
+        with mcols[4]:
+            st.metric(
+                "변형 적용 문항",
+                f"{n_variant_yes} / {n_q}",
+                delta=f"{pct_variant}% 비중",
+                delta_color="off",
+            )
+
     st.divider()
 
     t1, t2, t3, t4, t5, t6 = st.tabs(
@@ -103,9 +124,13 @@ def _render_dashboard(md: str, source_note: str) -> None:
     )
 
     with t1:
-        c1, c2 = st.columns((1.2, 1))
+        lay = (1.35, 1.0, 0.85) if has_variant else (1.2, 1.0)
+        cols = st.columns(lay)
+        c1 = cols[0]
+        c2 = cols[1]
+
         with c1:
-            st.subheader("문항·유형")
+            st.subheader("문항별 분석 (유형·출처·근거·변형)")
             if rep.exam_questions is not None:
                 st.dataframe(rep.exam_questions, use_container_width=True, hide_index=True)
             else:
@@ -116,6 +141,23 @@ def _render_dashboard(md: str, source_note: str) -> None:
             _safe_pie(tru, names_col="유형", values_col="비율", title="유형 비율")
             if tru is not None:
                 st.dataframe(tru, use_container_width=True, hide_index=True)
+
+        if has_variant and len(cols) > 2:
+            with cols[2]:
+                st.subheader("변형 여부 분포")
+                ee = rep.exam_questions
+                assert ee is not None
+                vcnt = ee["변형 여부"].astype(str).str.strip().value_counts().reset_index()
+                vcnt.columns = ["변형 여부", "개수"]
+                _safe_pie(vcnt, names_col="변형 여부", values_col="개수", title="변형 분포")
+                if "변형 내용" in ee.columns:
+                    with st.expander("변형이 있는 문항만 보기", expanded=False):
+                        msk_rows = ee["변형 여부"].astype(str).str.strip().str.contains("있음", na=False)
+                        sub = ee.loc[msk_rows]
+                        if not sub.empty:
+                            st.dataframe(sub, use_container_width=True, hide_index=True)
+                        else:
+                            st.caption('"있음"으로 표기된 행이 없습니다.')
 
     with t2:
         c1, c2 = st.columns((1.2, 1))
@@ -161,10 +203,12 @@ def _render_dashboard(md: str, source_note: str) -> None:
         st.subheader("고난도 문항")
         if not rep.hard_blocks:
             st.info("고난도 섹션을 찾지 못했습니다.")
-        for title, hdf in rep.hard_blocks:
+        for title, body_md, hdf in rep.hard_blocks:
             with st.expander(f"📌 {title}", expanded=len(rep.hard_blocks) <= 2):
                 if hdf is not None:
                     st.dataframe(hdf, use_container_width=True, hide_index=True)
+                elif body_md.strip():
+                    st.markdown(body_md.strip())
 
     with t5:
         vc1, vc2 = st.columns(2)
@@ -183,14 +227,16 @@ def _render_dashboard(md: str, source_note: str) -> None:
 
     with t6:
         st.subheader("최종 평가")
-        if rep.evaluation is not None:
+        if rep.evaluation is not None and not rep.evaluation.empty:
             for _, row in rep.evaluation.iterrows():
                 k = str(row.iloc[0])
                 v = str(row.iloc[1]) if len(row) > 1 else ""
                 st.markdown(f"**{k}**\n\n{v}")
                 st.divider()
+        elif (rep.evaluation_markdown or "").strip():
+            st.markdown(rep.evaluation_markdown.strip())
         else:
-            st.info("최종 평가 표 없음.")
+            st.info("최종 평가(표 또는 목록 형식)를 찾지 못했습니다.")
 
 
 def main() -> None:
@@ -257,19 +303,26 @@ def main() -> None:
             cap = f"📌 {lbl}\n_{when}_"
             if line2:
                 cap += f"\n{line2}"
-            if st.sidebar.button(cap, key=f"snap_load_{bid}", use_container_width=True):
-                try:
-                    text = load_report(bid)
-                except Exception as ex:
-                    st.sidebar.error(f"불러오기 실패: {ex}")
-                else:
-                    st.session_state["report_md_paste"] = text
-                    if "report_file_uploader" in st.session_state:
-                        try:
-                            del st.session_state["report_file_uploader"]
-                        except Exception:
-                            st.session_state["report_file_uploader"] = None
-                    st.sidebar.success(f"불러옴 · {lbl}")
+            row_c1, row_c2 = st.sidebar.columns([5, 1])
+            with row_c1:
+                if st.button(cap, key=f"snap_load_{bid}", use_container_width=True):
+                    try:
+                        text = load_report(bid)
+                    except Exception as ex:
+                        st.sidebar.error(f"불러오기 실패: {ex}")
+                    else:
+                        st.session_state["report_md_paste"] = text
+                        if "report_file_uploader" in st.session_state:
+                            try:
+                                del st.session_state["report_file_uploader"]
+                            except Exception:
+                                st.session_state["report_file_uploader"] = None
+                        st.sidebar.success(f"불러옴 · {lbl}")
+                        st.rerun()
+            with row_c2:
+                if st.button("⌫", key=f"snap_del_{bid}", help="이 기록 삭제"):
+                    delete_report(str(bid))
+                    st.sidebar.success("삭제됨")
                     st.rerun()
 
     tb_dash, tb_edit = st.tabs(["대시보드", "마크다운 붙여넣기"])
@@ -278,7 +331,7 @@ def main() -> None:
             "# 제목 과 ## ① … 표 를 붙여 넣음",
             height=460,
             key="report_md_paste",
-            placeholder="# 김포고1 영어 시험 분석 리포트\n\n---\n\n## ① 시험 분석\n| 번호 | 유형 | 근거 |",
+            placeholder="# 영어 시험지 분석 리포트\n\n## ① 시험 분석\n| 번호 | 유형 | 출처 | 근거 | 변형 여부 | 변형 내용 |",
         )
 
     md_content = ""

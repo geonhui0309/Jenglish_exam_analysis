@@ -97,3 +97,21 @@ def load_report(report_id: str) -> str:
     if not p.is_file():
         raise FileNotFoundError(report_id)
     return p.read_text(encoding="utf-8")
+
+
+def delete_report(report_id: str) -> bool:
+    """manifest에서 제거하고 .md 파일을 삭제. 성공하면 True."""
+    rid = (report_id or "").strip()
+    if not rid:
+        return False
+    rows_before = _read_manifest()
+    new_rows = [r for r in rows_before if str(r.get("id", "")) != rid]
+    _write_manifest(new_rows)
+    p = STORAGE_DIR / f"{rid}.md"
+    file_existed = p.is_file()
+    if file_existed:
+        try:
+            p.unlink(missing_ok=True)
+        except OSError:
+            return False
+    return file_existed or len(new_rows) < len(rows_before)

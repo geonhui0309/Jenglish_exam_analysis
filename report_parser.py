@@ -100,19 +100,31 @@ def _after_heading(section: str, heading_sub: str) -> str:
     return section[m.end() :]
 
 
-def _parse_hard_blocks(section_4: str) -> list[tuple[str, pd.DataFrame | None]]:
-    """`### 고난도 N: ...` 블록들."""
+def _after_heading_any(section: str, *heading_subs: str) -> str:
+    """`### …` 에서 후보 헤더 중 첫 매칭 이후 문자열."""
+    for h in heading_subs:
+        t = _after_heading(section, h)
+        if t.strip():
+            return t
+    return ""
+
+
+def _parse_hard_blocks(section_4: str) -> list[tuple[str, str, pd.DataFrame | None]]:
+    """④ 구간 내 `### N번` 또는 `### 고난도 …` 블록. (제목, 본문 마크다운, 첫 표)."""
     if not section_4.strip():
         return []
-    out: list[tuple[str, pd.DataFrame | None]] = []
-    matches = list(re.finditer(r"^###\s*(고난도\s*\d+[^\n]*)", section_4, re.MULTILINE))
+    out: list[tuple[str, str, pd.DataFrame | None]] = []
+    matches = list(re.finditer(r"^###\s*(.+)$", section_4, re.MULTILINE))
+    if not matches:
+        return []
     for i, m in enumerate(matches):
         title = m.group(1).strip()
         start = m.end()
         end = matches[i + 1].start() if i + 1 < len(matches) else len(section_4)
         body = section_4[start:end]
         dfs = _extract_tables_in_order(body)
-        out.append((title, dfs[0] if dfs else None))
+        tbl = dfs[0] if dfs else None
+        out.append((title, body.strip(), tbl))
     return out
 
 
@@ -147,10 +159,11 @@ class ReportDashboard:
     source_ratio: pd.DataFrame | None = None
     final_compare: pd.DataFrame | None = None
     final_criteria: str = ""
-    hard_blocks: list[tuple[str, pd.DataFrame | None]] = field(default_factory=list)
+    hard_blocks: list[tuple[str, str, pd.DataFrame | None]] = field(default_factory=list)
     vocab_high: pd.DataFrame | None = None
     vocab_mid: pd.DataFrame | None = None
     evaluation: pd.DataFrame | None = None
+    evaluation_markdown: str = ""
     raw_markdown: str = ""
     parse_notes: list[str] = field(default_factory=list)
 
@@ -201,8 +214,8 @@ def parse_report_markdown(md: str) -> ReportDashboard:
         r.hard_blocks = _parse_hard_blocks(s4)
 
     if s5:
-        sub_h = _after_heading(s5, "상위 난이도 어휘")
-        sub_m = _after_heading(s5, "중상 난이도 어휘")
+        sub_h = _after_heading_any(s5, "상위 난이도 어휘", "상위 난이도")
+        sub_m = _after_heading_any(s5, "중상 난이도 어휘", "중상 난이도")
         if sub_h:
             th = _extract_tables_in_order(sub_h)
             if th:
@@ -222,6 +235,8 @@ def parse_report_markdown(md: str) -> ReportDashboard:
         t6 = _extract_tables_in_order(s6)
         if t6:
             r.evaluation = t6[0]
+        if r.evaluation is None:
+            r.evaluation_markdown = s6.strip()
 
     return r
 
